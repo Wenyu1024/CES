@@ -1,3 +1,9 @@
 # Combined Essentiality Score (CES)
-R code and input data used for doing relative analysis in the manuscript.
-All the data come from publicliy avaliable database.
+
+Motivation: Probing the genetic dependencies of cancer cells helps understand the tumor biology and identify potential drug targets. RNAi-based shRNA and CRISPR/Cas9-based sgRNA have been commonly utilized in functional genetic screens to identify essential genes affecting growth rates in cancer cell lines. However, questions remain whether the gene essentiality profiles determined using these two technologies are comparable. We collected 42 cell lines screened both by shRNA and CRISPR techniques, representing a variety of 10 tissue types. We observed poor consistency of the essentiality scores between the two screens for the majority of the cell lines. The consistency did not improve after correcting the off-target effects in the shRNA screening, suggesting a minimal impact of off-target effects. We considered a linear regression model where the shRNA essentiality score is the predictor and the CRISPR essentiality score is the response variable. We showed that by including molecular features such as mutation, gene expression and copy number variation as covariates, the predictability of the regression model greatly improved, suggesting that molecular features may provide critical information in explaining the discrepancy between the shRNA and CRISPR-based essentiality scores. 
+
+We provided a Combined Essentiality Score (CES) based on the model prediction and showed that the CES greatly improved the consensus of common essential genes. Furthermore, the CES also identified novel essential genes that are specific to individual cell types. Taken together, we provided a systematic approach to define a more accurate gene essentiality profile by integrating functional screen data and molecular profiles. The functional screening and molecular data for cancer cell lines were obtained from public databases. The R-scripts used in this study are available upon request.
+
+
+
+
