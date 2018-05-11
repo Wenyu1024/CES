@@ -6,7 +6,11 @@ We considered a linear regression model where the shRNA essentiality score is th
 We provided a Combined Essentiality Score (CES) based on the model prediction and showed that the CES greatly improved the consensus of common essential genes. Furthermore, the CES also identified novel essential genes that are specific to individual cell types. 
 
 
+# Code 
+R code for condcuting the analysis is provided.
 
+# Data
+Preapred gene-level data, gene name annotation as well as a housekeeping gene list used for the code are avaliable at https://drive.google.com/file/d/1XmmNZ9laasS0KpkAb9FfpSJX5I-9B-2g/view?usp=sharing
 
 
 
