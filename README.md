@@ -10,7 +10,7 @@ We provided a Combined Essentiality Score (CES) based on the model prediction an
 R code for condcuting the analysis is provided.
 
 # Data
-Preapred gene-level data, gene name annotation as well as a housekeeping gene list used for the code are avaliable at https://drive.google.com/file/d/1XmmNZ9laasS0KpkAb9FfpSJX5I-9B-2g/view?usp=sharing
+Preapred gene-level data, gene name annotation as well as a housekeeping gene list used for the code are avaliable at https://drive.google.com/open?id=1QyrAxUzNEvbvYwHg4_xXh-dCgWB7a0A2
 
 
 
