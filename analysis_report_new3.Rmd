@@ -1,0 +1,2016 @@
+---
+title: "Combined_essentiality_paper"
+author: "wenyu"
+date: "March 29, 2019"
+output: html_document
+---
+
+```{r setup, incluide=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+In this report I will use the new data_long as input and revise the analysis as discussed
+#Env preparing
+```{r,message=FALSE, warning= FALSE}
+#some loading
+input_data_dir= "C:/Users/wenyu/Documents/functional genomics/manuscript3_ebiomedicine/data_and_code"
+output_fig_dir= 
+  "C:/Users/wenyu/Documents/functional genomics/manuscript3_ebiomedicine/fig_dir"
+table_dir = "C:/Users/wenyu/Documents/functional genomics/manuscript3_ebiomedicine"
+library(data.table)
+library(tidyr)
+library(hydroGOF) #for mse function
+library(plyr)
+library(VennDiagram)
+library(dplyr)
+library(psych) #for harmonica mean function
+library(openxlsx)
+library(gridExtra)
+library(plotROC)
+library(VennDiagram)
+library(RAM)
+library(cowplot)
+library(stringr)
+library(ggpubr)
+library(RColorBrewer)
+memory.limit(size=30000)
+# library(ggpubr)
+options(stringsAsFactors = FALSE)
+col_panel <- brewer.pal(8, "Set1")
+```
+# Data import
+
+```{r}
+setwd(input_data_dir)
+data_long_null <- fread("data_long1_new.csv") #dataa is not normalized
+
+data_long_null <- data_long_null %>%  select(-cell)
+colnames(data_long_null)[10] <- "cell"
+data_long_null$tissue_origin[which(data_long_null$tissue_origin == "Lung NSCLC")] = "Lung"
+data_long_null$tissue_origin[which(data_long_null$tissue_origin == "Lung NSCLC")] = "Lung"
+data_long_null$cell[which(data_long_null$cell == "LNCAPCLONEFGC")] = "LNCAP"
+
+summary(data_long_null)
+apply(data_long_null[,2:9], 2, describe)
+# data_long1 <- data_long %>% mutate_at(.vars = one_of(colnames(data_long)[2:9]), 
+#                                     .funs = scale)
+
+#first use cell-wise z normalization
+data_long <- data_long_null %>% 
+  group_by(cell) %>% 
+  mutate(
+  crispr = scale(crispr),
+  rnai_un = scale(rnai_un),
+  array = scale(array),
+  seq = scale(seq),
+  cn = scale(cn),
+  mut = scale(mut),
+  ceres = scale(ceres),
+  demeter = scale(demeter),
+) %>% 
+  ungroup(cell)
+summary(data_long)
+apply(data_long[,2:9], 2, describe)
+data_long %>% summarise(maxi= max(crispr,na.rm = T))
+
+
+hk_gene <- fread(file = 'C:/Users/wenyu/Documents/functional genomics/manuscript3_ebiomedicine/data_and_code/HK_genes.txt',header = F)
+hk_gene <- hk_gene$V1
+true_pos <- fread(file = "C:/Users/wenyu/Documents/functional genomics/manuscript3_ebiomedicine/data_and_code/training_essentials.txt",header = T)
+#https://www.g3journal.org/content/7/8/2719
+true_pos <- true_pos$Gene
+#http://msb.embopress.org/content/10/7/733.long#DC
+true_neg <- fread(file = "C:/Users/wenyu/Documents/functional genomics/manuscript3_ebiomedicine/data_and_code/NEGv1.txt",header =T)
+true_neg <- true_neg$Gene
+```
+
+```{r}
+#make function for exporting figures
+export_fig <- function(fig_name, width= 11.1, height, unit="cm", plot = NULL) {
+    if (is.null(plot)) {
+        plot <- last_plot()
+    }
+    ggsave(file.path(output_fig_dir, paste0(fig_name, '.svg')), 
+             width = width, height = height, dpi=350, plot = plot)
+    dev.off()
+    ggsave(file.path(output_fig_dir, paste0(fig_name, '.pdf')), 
+           width = width, height = height, plot = plot, device = cairo_pdf())
+    dev.off()
+}
+```
+
+
+
+# Investigate the cell-wise correlation between CRISPR and RNAi
+there are three layers of hierachy, including type of scores of essentiality(crispr, rnai, demeter), type of metrics(pearson,spearman coefficient, coefficient of determines) as well as  the scale of comparison (genomewide, house-keeping genes, true negative genes)
+
+consistency was calculated as:
+*coorelation coefficient*
+*coefficient of determines*
+*mse*
+
+
+```{r}
+#there is no need to filter for NA, but instead set use =complete.obs
+
+
+# 1 in genome-wide genes
+gw_matrics <- data_long %>% 
+  group_by(cell,tissue_origin) %>%
+  summarise(
+    rnai_crispr_p_coef= cor(rnai_un, crispr, method = "pearson",use="complete.obs"),
+    rnai_crispr_s_coef= cor(rnai_un, crispr, method = "spearman",use="complete.obs"),
+#   rnai_crispr_R2= 1 - (sum((crispr-rnai_un)^2)/ sum((crispr-mean(crispr))^2  ), 
+    rnai_crispr_mse = mean((crispr-rnai_un)^2,na.rm = T),
+#    rnai_crispr_mse_random = mean((crispr-rnorm(1))^2,na.rm = T), 
+    rnai_crispr_mse_random = mean((crispr-sample(rnai_un))^2,na.rm = T), 
+    demeter_crispr_p_coef= cor(demeter, crispr, method = "pearson",use="complete.obs"),
+    demeter_crispr_s_coef= cor(demeter, crispr, method = "spearman",use="complete.obs"),
+#   demeter_crispr_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ),
+    demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"),
+    demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"),
+#   demeter_rnai_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ),
+            ) %>% 
+  ungroup(cell,tissue_origin)
+
+
+## 2 in house keeping genes
+hk_matrics <- data_long %>% 
+  group_by(cell,tissue_origin) %>%
+  filter(gene %in% hk_gene) %>%
+  summarise(rnai_crispr_p_coef= cor(rnai_un, crispr, method = "pearson",use="complete.obs"),
+            rnai_crispr_s_coef= cor(rnai_un, crispr, method = "spearman",use="complete.obs"),
+#            rnai_crispr_R2= 1 - (sum((crispr-rnai_un)^2)/ sum((crispr-mean(crispr))^2  ), 
+            
+            demeter_crispr_p_coef= cor(demeter, crispr, method = "pearson",use="complete.obs"),
+            demeter_crispr_s_coef= cor(demeter, crispr, method = "spearman",use="complete.obs"),
+#            demeter_crispr_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ),
+            
+            demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"),
+            demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"),
+#            demeter_rnai_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ),
+            )%>% 
+  ungroup(cell,tissue_origin)
+
+
+#3 in Hart curated core essential genes
+true_ess_matrics <- data_long %>% 
+  group_by(cell,tissue_origin) %>%
+  filter(gene %in% true_pos) %>%
+  summarise(rnai_crispr_p_coef= cor(rnai_un, crispr, method = "pearson",use="complete.obs"),
+            rnai_crispr_s_coef= cor(rnai_un, crispr, method = "spearman",use="complete.obs"),
+#            rnai_crispr_R2= 1 - (sum((crispr-rnai_un)^2)/ sum((crispr-mean(crispr))^2  ), 
+            
+            demeter_crispr_p_coef= cor(demeter, crispr, method = "pearson",use="complete.obs"),
+            demeter_crispr_s_coef= cor(demeter, crispr, method = "spearman",use="complete.obs"),
+#            demeter_crispr_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ),
+            
+            demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"),
+            demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"),
+#            demeter_rnai_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ),
+            )%>% 
+  ungroup(cell,tissue_origin)
+
+#4 in Hart curated core essential genes
+true_neg_matrics <- data_long %>% 
+  group_by(cell,tissue_origin) %>%
+  filter(gene %in% true_neg) %>%
+  summarise(rnai_crispr_p_coef= cor(rnai_un, crispr, method = "pearson",use="complete.obs"),
+            rnai_crispr_s_coef= cor(rnai_un, crispr, method = "spearman",use="complete.obs"),
+#            rnai_crispr_R2= 1 - (sum((crispr-rnai_un)^2)/ sum((crispr-mean(crispr))^2  ), 
+            
+            demeter_crispr_p_coef= cor(demeter, crispr, method = "pearson",use="complete.obs"),
+            demeter_crispr_s_coef= cor(demeter, crispr, method = "spearman",use="complete.obs"),
+#            demeter_crispr_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ),
+            
+            demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"),
+            demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"),
+#            demeter_rnai_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ),
+            )%>% 
+  ungroup(cell,tissue_origin)
+
+
+summary(gw_matrics)
+summary(true_neg_matrics)
+summary(true_ess_matrics)
+summary(hk_matrics)
+```
+
+
+## Ploting figure2  
+plotting on specific dataset (crispr and rnai),
+using specific indexes(pearson coorelation coefficient and mse) 
+within specific range (genome-wide)
+
+### fig2a
+```{r,fig.height=10, fig.width=6}
+#check this for how to add a line to one of the facets?
+#https://stackoverflow.com/questions/34686217/how-can-i-add-a-line-to-one-of-the-facets
+# does mse different from a random prediction?
+wilcox.test(gw_matrics$rnai_crispr_mse,gw_matrics$rnai_crispr_mse_random,paired = T)
+
+tmp <- gw_matrics %>% select(cell:rnai_crispr_p_coef, rnai_crispr_mse, rnai_crispr_mse_random) %>% 
+  mutate(cell= as.factor(cell), tissue_origin= as.factor(tissue_origin)) %>% 
+  arrange(rnai_crispr_p_coef)
+colnames(tmp)[3:4] <- c("Correlation", "MSE")
+idx <- as.character(tmp$cell)  #used to created an ordered factor so that it can be used in plotting
+tmp <- tmp %>% 
+  gather(key="com_type",value = "Consistency",Correlation: MSE )
+
+fig2a <- 
+  tmp %>% 
+  ggplot(aes(x = factor(cell, levels=idx ), y= Consistency,fill= tissue_origin))+ 
+  geom_bar(position = position_dodge(), width=0.9, stat = "identity")+
+  geom_hline(data= subset(tmp,com_type == "MSE"),
+              aes(yintercept = mean(gw_matrics$rnai_crispr_mse_random)), linetype="dashed")+
+  facet_wrap(~ com_type, nrow=1,scales="free_x",strip.position = "top")+
+  coord_flip() +
+  theme_classic()+
+  theme(axis.title.x=element_text(size = 14, color = "black"))+
+  theme(axis.text.x = element_text(size = 12,color = "black"))+
+  theme(axis.title.y=element_text(size = 15, color = "black"))+
+  theme(axis.text.y = element_text(size = 10,color = "black"))+
+  theme(legend.title=element_text(size = 14))+
+  theme(legend.text = element_text(size = 11))+
+  theme(legend.direction = "vertical")+
+  theme(strip.text = element_text(color="black", size=13))+
+  guides(fill=guide_legend(title="Tissue", nrow = 10, byrow = F))+
+  xlab("Cell\n")+
+  ylab("\nCRISPR and shRNA based Essentiality")+
+  theme(legend.position = "bottom")+
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+ fig2a
+```
+
+
+
+### figure 2.b 
+overall box plot for the ess score between core ess gene and non-ess using crispr and rnai
+simultaneously dodge and jitter
+https://ggplot2.tidyverse.org/reference/position_jitterdodge.html
+
+
+```{r,fig.height=5, fig.width=5}
+tmp <- data_long %>% 
+  select(gene:rnai_un,cell) %>% 
+  mutate(house_keeping_gene = gene %in% hk_gene ) %>% 
+  mutate(true_essential_gene = gene %in% true_pos) %>% 
+  mutate(non_essential_gene = gene %in% true_neg) %>% 
+  gather(key = screen_method, value= ess_score, crispr:rnai_un)
+
+#true essential gene
+
+tmp1 <- tmp %>% 
+  mutate(gene_type=             case_when(true_essential_gene & (!non_essential_gene) ~ 
+                       "core essential gene",
+#                    non_essential_gene & (!true_essential_gene) ~ F ))%>%
+                       TRUE ~ "others" ) )%>%
+  filter(!(is.na(gene_type))) 
+
+summary(tmp1)
+
+tmp1 %>% 
+  ggplot(aes(x= screen_method, color = gene_type, fill= gene_type
+                   , y= ess_score)) +
+  geom_violin(trim = F,position =position_dodge(width = 1) )+
+  ylim(c(-4,4))+
+  geom_boxplot(width=0.1,color="black", outlier.shape = NA,position = position_dodge(width = 1)) #+   facet_wrap(~cell)
+
+
+#housekeeping gene
+
+tmp1 <- tmp %>% 
+  mutate(gene_type= 
+           case_when(house_keeping_gene & (!non_essential_gene) ~ "house keeping gene",#             non_essential_gene & (!true_essential_gene) ~ F ))%>%
+                                                          TRUE ~ "others" ) )%>%
+  filter(!(is.na(gene_type))) 
+
+
+
+tmp1 %>% 
+  filter(screen_method == "crispr") %>% 
+  wilcox.test( ess_score ~ gene_type,data = ., var.equal = TRUE)
+  
+tmp1 %>% 
+  filter(screen_method == "rnai_un") %>% 
+  wilcox.test( ess_score ~ gene_type,data = ., var.equal = TRUE)
+
+
+
+fig2b <- tmp1 %>% 
+  ggplot(aes(x= screen_method,  fill= gene_type
+                   , y= ess_score)) +
+  geom_violin(trim = F,position =position_dodge(width = 1))+
+  ylim(c(-4,4))+
+  geom_boxplot(lwd=1, width=0.2,color="black", 
+               outlier.shape = NA,
+               position = position_dodge(width = 1)
+                )+
+  theme_classic()+  
+  theme(axis.title.x=element_text(size = 16))+
+  theme(axis.text.x = element_text(size = 16,color = "black"))+
+  theme(axis.title.y=element_text(size = 16))+
+  theme(axis.text.y = element_text(size = 16,color = "black"))+
+  theme(legend.title=element_text(size = 16))+
+  theme(legend.text = element_text(size = 16))+
+  theme(legend.position = "top")+
+  theme(axis.title.x = element_blank())+
+  scale_x_discrete( labels= c("CRISPR", "shRNA"))+
+  scale_fill_manual(name=element_blank(),
+                    labels = c("Housekeeping genes", "Others"),
+                    values=c("red", "green") )+
+  # scale_fill_discrete(name = "Gene type", 
+  #                   labels = c("Housekeeping genes", "Others") )+
+  # scale_fill_manual(values=c("red", "green") )+
+  ylab("Essentiality score\n")+
+  theme(plot.margin=unit(c(0,1,1,1),"cm"))+
+  guides(fill=guide_legend( nrow = 2, byrow = T))
+
+fig2b 
+```
+
+some experiment on jitter plot
+```{r}
+tmp1 <- tmp %>% 
+  mutate(essential= case_when(true_essential_gene & (!non_essential_gene) ~ T,
+#                               non_essential_gene & (!true_essential_gene) ~ F ))%>%
+  TRUE ~ F ) )%>%
+  select(- contains("gene")) %>% 
+  filter(!(is.na(essential))) 
+
+tmp1 %>% ggplot(mapping = aes(x= screen_method, y= ess_score,color = essential, fill= essential )) +
+  geom_jitter( size = 0.1,
+               position = position_jitterdodge( jitter.width = 0.25) )
+  # geom_violin(fill= "black", trim = F,position =position_dodge(width = 1) )+
+  # ylim(c(-10,10))+
+  # labs(fill="house_keeping")
+```
+
+
+
+### figure 2c : 
+the correlation of cripsr and rnai in hkgenes(or HK_genes) comparing to others (or true neg)
+# ```{r,fig.height=5, fig.width=5}
+# 
+# tmp1 <- true_ess_matrics %>% 
+#   select(cell:rnai_crispr_p_coef) %>% 
+#   rename(ESS = rnai_crispr_p_coef) 
+# 
+# tmp2 <- hk_matrics %>% 
+#   select(cell:rnai_crispr_p_coef) %>%
+#   rename(HK = rnai_crispr_p_coef)
+# 
+# tmp3 <- true_neg_matrics %>% 
+#   select(cell:rnai_crispr_p_coef) %>%
+#   rename(Non_ESS = rnai_crispr_p_coef)
+# 
+# tmp <-  tmp1 %>% 
+#   left_join(tmp2) %>% 
+#   left_join(tmp3)
+# t.test(tmp$ESS,tmp$Non_ESS)
+# t.test(tmp$HK,tmp$Non_ESS)
+# 
+# 
+# tmp <-  tmp1 %>% 
+#   left_join(tmp2) %>% 
+#   left_join(tmp3)%>% 
+#   gather(key = "gene_type", value = "consistency",ESS:Non_ESS) %>% 
+#   mutate(cell=as.factor(cell),
+#          tissue_origin= as.factor(tissue_origin))
+# 
+# fig2c <- tmp %>%
+#   ggplot(aes(x= gene_type, y= consistency))+
+#   geom_boxplot(lwd=1,outlier.shape = NA)+
+#   geom_jitter()+
+#   theme_classic()+  
+#   theme(axis.title.x=element_text(size = 14))+
+#   theme(axis.text.x = element_text(size = 12,color = "black"))+
+#   theme(axis.title.y=element_text(size = 14))+
+#   theme(axis.text.y = element_text(size = 12,color = "black"))+
+#   theme(legend.title=element_text(size = 14))+
+#   theme(legend.text = element_text(size = 12))+
+#   theme(legend.position = "bottom")+
+# #  scale_fill_manual(values=c("red", "green"))+
+#   xlab("\nGene type")+
+#   ylab("Correlation between CRISPR and RNAi 
+#             based essential score\n")+
+#   theme(plot.margin=unit(c(1,1,0,1),"cm"))
+# fig2c
+# 
+# 
+# ```
+
+```{r,fig.height=5, fig.width=5}
+
+
+
+tmp1 <- hk_matrics %>% 
+  select(cell:rnai_crispr_p_coef) %>%
+  rename(`house keeping gene` = rnai_crispr_p_coef)
+
+non_hk_matrics <- data_long %>% 
+  group_by(cell,tissue_origin) %>%
+  filter(!(gene %in% hk_gene)) %>%
+  summarise(rnai_crispr_p_coef= cor(rnai_un, crispr, method = "pearson",use="complete.obs"),
+            rnai_crispr_s_coef= cor(rnai_un, crispr, method = "spearman",use="complete.obs"),
+#            rnai_crispr_R2= 1 - (sum((crispr-rnai_un)^2)/ sum((crispr-mean(crispr))^2  ), 
+            
+            demeter_crispr_p_coef= cor(demeter, crispr, method = "pearson",use="complete.obs"),
+            demeter_crispr_s_coef= cor(demeter, crispr, method = "spearman",use="complete.obs"),
+#            demeter_crispr_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ),
+            
+            demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"),
+            demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"),
+#            demeter_rnai_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ),
+            )%>% 
+  ungroup(cell,tissue_origin)
+
+tmp2 <- non_hk_matrics %>%
+  select(cell:rnai_crispr_p_coef) %>%
+  rename(others = rnai_crispr_p_coef)
+
+tmp <-  tmp1 %>% 
+  left_join(tmp2) 
+#t.test(tmp$`house keeping gene`,tmp$others)
+wilcox.test(tmp$`house keeping gene`,tmp$others,paired = T)
+t.test(tmp$`house keeping gene`,tmp$others,paired = T)
+
+
+tmp <-  tmp1 %>% 
+  left_join(tmp2) %>% 
+  gather(key = "gene_type", value = "consistency",3:4) %>% 
+  mutate(cell=as.factor(cell),
+         tissue_origin= as.factor(tissue_origin))
+
+fig2c <- tmp %>%
+  ggplot(aes(x= gene_type, y= consistency))+
+  geom_boxplot(lwd=1,outlier.shape = NA)+
+  geom_jitter()+
+  theme_classic()+  
+  theme(axis.title.x=element_text(size = 16))+
+  theme(axis.text.x = element_text(size = 14,color = "black"))+
+  theme(axis.title.y=element_text(size = 14))+
+  theme(axis.text.y = element_text(size = 14,color = "black"))+
+  theme(axis.title.x = element_blank())+
+  # theme(legend.title=element_text(size = 14))+
+  # theme(legend.text = element_text(size = 14))+
+  # theme(legend.position = "bottom")+
+  scale_x_discrete(name = "Gene type", labels = c("Housekeeping \n genes", "Others"))+
+  xlab("\nGene type")+
+  ylab("Correlation between CRISPR and shRNA 
+      based essentiality score\n")+
+  theme(plot.margin=unit(c(1,1,1,1),"cm"))
+  
+fig2c
+
+
+gw_matrics %>% filter(rnai_crispr_p_coef <0) %>% summarise(ave_cor=mean(rnai_crispr_p_coef))
+cell_neg <- gw_matrics %>% filter(rnai_crispr_p_coef <0) %>%pull(cell)
+hk_matrics %>% filter(cell==cell_neg) %>% summarize(ave_cor= mean(rnai_crispr_p_coef))
+non_hk_matrics%>% filter(cell==cell_neg) %>% summarize(ave_cor= mean(rnai_crispr_p_coef))
+
+```
+
+<!-- #check -->
+<!-- ```{r} -->
+<!-- tmp1 <- true_ess_matrics %>%  -->
+<!--   select(cell:rnai_crispr_p_coef) %>% -->
+<!--   rename(`house keeping gene` = rnai_crispr_p_coef) -->
+
+<!-- non_hk_matrics <- data_long %>%  -->
+<!--   group_by(cell,tissue_origin) %>% -->
+<!--   filter(!(gene %in% hk_gene)) %>% -->
+<!--   summarise(rnai_crispr_p_coef= cor(rnai_un, crispr, method = "pearson",use="complete.obs"), -->
+<!--             rnai_crispr_s_coef= cor(rnai_un, crispr, method = "spearman",use="complete.obs"), -->
+<!-- #            rnai_crispr_R2= 1 - (sum((crispr-rnai_un)^2)/ sum((crispr-mean(crispr))^2  ),  -->
+
+<!--             demeter_crispr_p_coef= cor(demeter, crispr, method = "pearson",use="complete.obs"), -->
+<!--             demeter_crispr_s_coef= cor(demeter, crispr, method = "spearman",use="complete.obs"), -->
+<!-- #            demeter_crispr_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ), -->
+
+<!--             demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"), -->
+<!--             demeter_rnai_p_coef= cor(demeter, rnai_un, method = "pearson",use="complete.obs"), -->
+<!-- #            demeter_rnai_R2= 1 - (sum((demeter-rnai_un)^2)/ sum((demeter-mean(demeter))^2  ), -->
+<!--             )%>%  -->
+<!--   ungroup(cell,tissue_origin) -->
+
+<!-- tmp2 <- non_hk_matrics %>% -->
+<!--   select(cell:rnai_crispr_p_coef) %>% -->
+<!--   rename(others = rnai_crispr_p_coef) -->
+
+<!-- tmp <-  tmp1 %>%  -->
+<!--   left_join(tmp2)  -->
+<!-- #t.test(tmp$`house keeping gene`,tmp$others) -->
+<!-- wilcox.test(tmp$`house keeping gene`,tmp$others,paired = T) -->
+<!-- t.test(tmp$`house keeping gene`,tmp$others,paired = T) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- # setwd(output_fig_dir) -->
+<!-- # tiff("figure_2.tiff",  width = 40, height = 30,units = "cm",res = 300) -->
+
+<!-- fig_2_1 <- ggarrange(fig2b,fig2c, labels = c(letters[2:3]),nrow= 2) -->
+<!-- fig_2_2 <-ggarrange(fig2a, fig_2_1,ncol = 2,labels = "a") -->
+<!-- fig_2_2 -->
+<!-- # ggarrange(fig_s1_1,fig_s1_2,nrow = 2, heights = c(2,5)) -->
+<!-- dev.off() -->
+<!-- ``` -->
+
+# fig2d-e
+#new pathways from Jing
+```{r,fig.width=11.1,fig.height=4}
+setwd(input_data_dir)
+rnai_spec_df <- openxlsx::read.xlsx( "RNAi_responding_pathways_GO.xlsx",2)
+crispr_spec_df <- openxlsx::read.xlsx( "CRISPR_responding_pathways_GO.xlsx",2)
+
+firstup <- function(x) {
+  substr(x, 1, 1) <- toupper(substr(x, 1, 1))
+  x
+}
+spec_up <- function(x){
+  
+}
+plot_pathways <- function(df){
+  df %>% 
+    mutate(logFDR= round(-log10(`FDR.q-val`),2)) %>%
+    select(NAME,logFDR) %>% 
+    mutate(name_plot= tolower(str_sub(string = NAME,start = 4))) %>% 
+    mutate(name_plot1= str_replace_all(name_plot,pattern = "_",replacement = " ") ) %>% 
+    mutate(name_plot1= str_replace_all(name_plot1,pattern = "dna",replacement = "DNA") ) %>% 
+    mutate(name_plot1= str_replace_all(name_plot1,pattern = "rna",replacement = "RNA") ) %>% 
+    mutate(name_plot1= str_replace_all(name_plot1,pattern = "wnt",replacement = "WNT") ) %>% 
+    mutate(name_plot1= firstup(name_plot1)) %>% 
+    ggplot(aes(x= reorder(name_plot1,logFDR), y= logFDR))  +
+      geom_bar(stat = "identity")+
+      coord_flip()+
+    theme_classic()+
+    theme(axis.title.x=element_text(size = 16,  color= "black"))+
+    theme(axis.title.y=element_text(size = 16,  color= "black"))+
+    theme(axis.text.x = element_text(size = 16, color= "black"))+
+    theme(axis.text.y = element_text(size = 16,color= "black"))+
+    xlab("")+
+    ylab("-logFDR")+
+    theme(plot.margin=unit(c(0.5,0.5,0.5,1),"cm"))
+    
+}
+
+
+fig2d <- plot_pathways(crispr_spec_df)+
+  labs(title = "CRISPR sensitive")+ theme(plot.title = element_text(size= 20))
+fig2e <- plot_pathways(rnai_spec_df)+
+    labs(title = "shRNA sensitive")+ theme(plot.title = element_text(size= 20))
+fig2d
+fig2e
+```
+
+
+plot for the manuscript
+```{r,fig.height=11,fig.width=11.1}
+#library(ggpubr)
+fig_2_1 <- ggarrange(fig2b,fig2c, labels = c(letters[2:3]),nrow= 2)
+fig_2_2 <-ggarrange(fig2a, fig_2_1,ncol = 2,labels = "a")
+
+fig_2_2
+export_fig("fig2",height= 11, plot =  fig_2_2)
+```
+
+
+
+plot for the manuscript
+```{r,fig.height=8,fig.width=11.1}
+#library(ggpubr)
+
+fig_2_3 <- ggarrange(fig2d, fig2e,nrow = 2,labels = c("a","b"))
+
+export_fig("fig5",height= 8, plot =  fig_2_3)
+```
+
+
+plot for the poster
+```{r,fig.height=19,fig.width=11.1}
+#library(ggpubr)
+fig_2_1 <- ggarrange(fig2b,fig2c, labels = c(letters[2:3]),nrow= 2)
+fig_2_2 <-ggarrange(fig2a, fig_2_1,ncol = 2,labels = "a")
+fig_2_3 <- ggarrange(fig2d, fig2e,nrow = 2,labels = c("d","e"))
+fig2 <- ggarrange(fig_2_2, fig_2_3,nrow = 2, heights = c(11,8))
+fig2
+export_fig("fig2",height= 19, plot =  fig2)
+```
+
+
+
+# Combined gene essentiality scores helped to identify core essential genes
+
+## data preparation
+```{r}
+set.seed(1234)
+lm_null <- with(data_long, lm(crispr ~ rnai_un+cell )) #there is no need to filter "DLD1"
+tmp <- filter(data_long, cell!= "DLD1") 
+lm <- with(tmp, lm(crispr~ rnai_un+mut+seq+cn+array+cell )) # cell ID as covariate
+
+#tmp1 <- tmp
+#tmp1[,3:6] <- tmp1[sample(nrow(tmp)), 3:6] #it is impropraited to do this directly since there is NA values.
+tmp1 <- tmp %>% 
+  mutate(ces= predict.lm(lm, newdata = tmp)) 
+sampled_rows <- sample(nrow(tmp1)[is.na(tmp1$ces)])
+tmp1[,4:7] <- tmp1[sample(nrow(tmp))，4:7]
+lm_perm <- with(tmp1, lm(crispr~ rnai_un+mut+seq+cn+array+cell )) 
+
+
+
+tmp2 <- tmp %>% 
+  mutate(ces= predict.lm(lm, newdata = tmp)) %>% 
+  mutate(ces_perm= predict.lm(lm_perm,newdata = tmp)) %>% 
+  select(cell,gene,ces,ces_perm)
+  
+
+##add predicted score and add simple average score
+#rm rows without any type of ess score
+#lm <- with(tmp, lm(crispr~ rnai_un+mut+seq+cn+array+cell)) # cell ID as covariate
+# models <-  tmp %>% 
+#   group_by(cell) %>% 
+#   do(mod= lm( crispr~ rnai_un+mut+seq+cn+array , data = .)) 
+# models
+# 
+# library(modelr)
+# rmod <- tmp %>%
+#   group_by(cell) %>%
+#   nest() %>%
+#   mutate(mdl = map(data, ~ lm(crispr~ rnai_un+mut+seq+cn+array, data=.))) %>%
+#   mutate(fit = map(mdl, ~ .$fitted.values)) %>%
+#   mutate(data = map2(data, mdl, add_predictions))
+# tmp1 <- select(rmod, -mdl, -fit) %>% unnest()
+# 
+# coef_df <- models %>% 
+#   do(data.frame(
+#   cell = .$cell,
+#   var = names(coef(.$mod)),
+#   coef(summary(.$mod)))
+# )
+# colnames(tmp1)[12] <- "ces"
+# # library(broom)
+# # tmp1 = models %>% augment(mod)
+
+
+
+
+# merging these new columns back
+
+data_long1 <- left_join(x = data_long, y = tmp2) %>%   
+  mutate(simple_ave= rowMeans(cbind(rnai_un,crispr)) ) %>% 
+  mutate(ces_null = predict.lm(lm_null,newdata = data_long))
+
+cor(data_long1$simple_ave,data_long1$crispr, use= "complete.obs")
+cor(data_long1$simple_ave,data_long1$rnai_un, use= "complete.obs")
+
+summary(data_long1 )
+# ##check:
+# check <- data_long
+# check$idx <- 1:1619826
+# check1 <- filter(na.omit(check),cell!= "DLD1")
+# check2 <- filter(check, idx %in% setdiff(check$idx, check1$idx) )
+# apply(check2[,2:9], 2, describe)
+# check$sim_ave <- ( check$crispr +check$rnai_un)/2
+# cor(check$sim_ave,check$rnai_un, use= "complete.obs")
+
+# average rank for one gene across all the cell lines
+#https://github.com/tidyverse/dplyr/issues/1413
+
+rank_own = function(x) {res=rank(x);res[which(is.na(x)==T)]=NA;res}
+#this is problematic, do() function should be used
+# data_long1 <- data_long1 %>% group_by(cell) %>% 
+#   mutate(crispr_rank = rank_own(crispr)) %>% 
+#   mutate(rnai_rank = rank_own(rnai_un)) %>% 
+#   mutate(de_rank = rank_own(rnai_de)) %>% 
+#   mutate(ces_rank = rank_own(predicted)) %>%
+#   mutate(de_rank = rank_own(rnai_de)) %>% 
+#   mutate(ave_rank = rank_own(simple_ave)) %>% 
+#   mutate(ceres_rank = rank_own(ceres)) 
+
+  
+setDT(data_long1)[,c("crispr_rank","rnai_rank","de_rank","ceres_rank","ave_rank","ces_rank","ces_null_rank","ces_perm_rank"):=
+                    .(rank_own(crispr),
+                      rank_own(rnai_un),
+                      rank_own(demeter),
+                      rank_own(ceres),
+                      rank_own(simple_ave),
+                      rank_own(ces),
+                      rank_own(ces_null),
+                      rank_own(ces_perm)
+                           ), 
+                          by=.(cell)]  
+  
+```
+
+
+
+
+## Evaluating the performance of these essentiality scoring methods with gold standard
+
+
+https://cran.r-project.org/web/packages/plotROC/vignettes/examples.html
+```{r}
+summary(data_long1)
+library(plyr)
+tmp = ddply(data_long1,"gene", summarise,
+            crispr_score = mean(crispr_rank, na.rm = T),
+            rnai_score = mean(rnai_rank, na.rm = T),
+            ces_score = mean(ces_rank, na.rm = T),
+            de_score = mean(de_rank, na.rm = T),
+            ave_score = mean(ave_rank, na.rm =T),
+            ceres_score = mean(ceres_rank, na.rm= T),
+            ces_null_score=mean(ces_null_rank, na.rm= T),
+            ces_perm_score=mean(ces_perm_rank, na.rm= T ))
+
+# summary(tmp)
+
+# # common essential genes are those with average ranking lower than 1000
+# cut_off = 1000
+# crispr_set = tmp$gene[tmp$crispr_score < cut_off]
+# rnai_set = tmp$gene[tmp$rnai_score < cut_off]
+# ces_set = tmp$gene[tmp$ces_score < cut_off] 
+# de_set = tmp$gene[tmp$de_score < cut_off]
+# ave_set = tmp$gene[tmp$ave_score < cut_off]
+# ceres_set = na.omit(tmp$gene[tmp$ceres_score < cut_off])
+# 
+# length(na.omit(crispr_set)) # 33
+# length(na.omit(rnai_set)) # 420  
+# length(na.omit(ces_set) ) # 252
+# length(na.omit(de_set) )# 42
+# length(na.omit(ave_set) )#137
+# length(na.omit(ceres_set)) #1084
+
+### ROC plot for Hart true essential genes 
+
+# tmp$group = 1 # note that ranking is opposite, e.g. a lower ranking value predicts essential genes
+# tmp$group[tmp$gene %in% true_pos] = 0
+
+
+```
+
+
+
+```{r, fig.width=5.5}
+
+
+pal <- c(
+  "crispr_score" = col_panel[1],
+  "rnai_score" = col_panel[2],
+  "ces_score" = col_panel[3],
+  "ceres_score" = col_panel[4],
+  "ave_score" = col_panel[5],
+  "de_score" = col_panel[6],
+  "ces_null_score" = col_panel[7],
+  "ces_perm_score" =col_panel[8]
+)
+
+# pal1 <- c(
+#   "crispr_score" = "blue",
+#   "rnai_score" = "red",
+#   "ces_score" = "green",
+#   "ceres_score" = "black",
+#   "ave_score" = "black",
+#   "de_score" = "black"
+# )
+
+
+tmp1 <- tmp %>% filter(gene %in% c(true_pos, true_neg)) %>% 
+  mutate(group= case_when(gene %in% true_pos~ 0, TRUE ~1))
+
+
+longtest <- melt_roc(data = tmp1, d = "group", m = colnames(tmp1)[2:9])
+longtest$name <- as.factor(longtest$name)
+dim(longtest) # 55596
+
+
+
+fig3a = longtest %>% 
+  # filter(name %in% c("crispr_score","rnai_score","ces_score")) %>% 
+  ggplot( aes(d = D, m = M, color= name)) + geom_roc(n.cuts=0) + style_roc(xlab="FPR",ylab="TPR")+
+  theme_classic()+  
+  theme(
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size=14,color= "black"),
+        axis.text.y = element_text(size=14,color= "black"),
+        axis.title.x = element_text(size=16,color= "black"), 
+        axis.title.y = element_text(size=16,color= "black"), 
+        legend.title  = element_text(size=16,color= "black"),
+        legend.text = element_text(size = 14,color= "black"),
+        legend.position = "None" )+
+    theme(plot.margin=unit(c(1,1,1,1),"cm"))+
+    labs(col= "Method")+
+    scale_color_manual(values = pal)+
+    scale_x_continuous(breaks=seq(0,1,0.2),name = "FPR")+
+    scale_y_continuous(breaks=seq(0,1,0.2),name = "TPR")
+  
+                     
+fig3a
+calc_auc(fig3a)$AUC 
+
+### ROC plot for HK gene
+
+tmp1 <- tmp %>% filter(gene %in% c(hk_gene, true_neg)) %>% 
+  mutate(group= case_when(gene %in% hk_gene~ 0, TRUE ~1))
+
+longtest <- 
+  melt_roc(data = tmp1, d = "group", m = colnames(tmp1)[2:9])
+dim(longtest) # 55596
+fig3b = longtest %>% 
+    # filter(name %in% c("crispr_score","rnai_score","ces_score")) %>% 
+  ggplot(aes(d = D, m = M, color = name)) + 
+  geom_roc(n.cuts=0) + style_roc(xlab="FPR",ylab="TPR")+
+  theme_classic()+  
+  theme(
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size=14,color= "black"),
+        axis.text.y = element_text(size=14,color= "black"),
+        axis.title.x = element_text(size=16,color= "black"), 
+        axis.title.y = element_text(size=16,color= "black"), 
+        legend.title  = element_text(size=16,color= "black"),
+        legend.text = element_text(size = 14,color= "black"),
+        legend.position = "None" )+
+    theme(plot.margin=unit(c(1,1,1,1),"cm"))+
+    labs(col= "Method")+
+    scale_color_manual(values = pal)+
+    scale_x_continuous(breaks=seq(0,1,0.2),name = "FPR")+
+    scale_y_continuous(breaks=seq(0,1,0.2),name = "TPR")
+
+fig3b
+calc_auc(fig3b)$AUC
+
+```
+
+
+<!-- try other plotting packages -->
+<!-- ```{r} -->
+<!-- summary(data_long1) -->
+<!-- library(plyr) -->
+<!-- tmp = ddply(data_long1,"gene", summarise, -->
+<!--             crispr_score = mean(crispr_rank, na.rm = T), -->
+<!--             rnai_score = mean(rnai_rank, na.rm = T), -->
+<!--             ces_score = mean(ces_rank, na.rm = T), -->
+<!--             de_score = mean(de_rank, na.rm = T), -->
+<!--             ave_score = mean(ave_rank, na.rm =T), -->
+<!--             ceres_score = mean(ceres_rank, na.rm= T) ) -->
+<!-- tmp1 <- tmp %>% filter(gene %in% c(true_pos, true_neg)) %>%  -->
+<!--   mutate(group= case_when(gene %in% true_pos~ 0, TRUE ~1)) -->
+
+<!-- library(ROCR) -->
+<!-- get_perf <-  -->
+<!--   function(method){ -->
+<!--   method <- str_c(method, "score", sep = "_")   -->
+<!--   pred <-  tmp1 %>% select(contains(method)) %>%  pull(1)   -->
+<!--   pred1 <- prediction(pred, tmp1$group) -->
+<!--   perf <- performance(pred1,"tpr","fpr") -->
+<!--   return(perf) -->
+<!-- } -->
+
+
+
+
+<!-- plot(get_perf("crispr")) -->
+<!-- plot(get_perf("rnai"),add=TRUE) -->
+<!-- plot(get_perf("ces"),add=TRUE,col= "red") -->
+<!-- plot(get_perf("ceres"),add=TRUE) -->
+<!-- plot(get_perf("ave"),add=TRUE) -->
+<!-- plot(get_perf("de"),add=TRUE,col= "blue") -->
+
+
+<!-- ``` -->
+
+
+
+## check what proporation of cells has been identified to have GAPDH and ACTB as gold standard?
+
+generate a plot:
+### y: the percentage of cell lines discovered that GAPDH and ACTB
+### x: the threhold for the rank of the gene among all the genes from 1 to 2000,
+
+```{r,fig.width=5.5}
+
+plot_for_ess_gene <- function(gene_name){
+  tmp=data_long1[which(data_long1$gene==gene_name),]
+  threhold <- w1 <- w2 <- w3 <- w4 <- w5 <- w6 <- w8 <- w7 <- 1:1000
+  for (i in threhold){
+    ess_t <-  i 
+    w1[i] <- length(which(tmp$crispr_rank<ess_t))/length(which(!is.na(tmp$crispr_rank)))
+    w2[i] <- length(which(tmp$rnai_rank<ess_t))/length(which(!is.na(tmp$rnai_rank)))
+    w3[i] <- length(which(tmp$ces_rank<ess_t))/length(which(!is.na(tmp$ces_rank)))  
+    w4[i] <- length(which(tmp$de_rank<ess_t))/length(which(!is.na(tmp$de_rank)))
+    w5[i] <- length(which(tmp$ave_rank<ess_t))/length(which(!is.na(tmp$ave_rank)))
+    w6[i] <- length(which(tmp$ceres_rank<ess_t))/length(which(!is.na(tmp$ceres_rank)))  
+    w7[i] <- length(which(tmp$ces_null_rank<ess_t))/length(which(!is.na(tmp$ces_null_rank)))  
+    w8[i] <- length(which(tmp$ces_perm_rank<ess_t))/length(which(!is.na(tmp$ces_perm_rank)))  
+  }
+  
+  tmp1 <- data_frame(threhold, w1,w2,w3,w4,w5,w6,w7,w8)
+  colnames(tmp1)[2:9] <- c("crispr_score", "rnai_score", "ces_score", "de_score", "ave_score", "ceres_score","ces_null_score","ces_perm_score")
+  
+  tmp1 <- tbl_df(tmp1) %>% gather(key = "method", 
+           value = "Fraction", crispr_score:ces_perm_score) %>% 
+    mutate( method= as.factor(method))
+  
+  fig <- tmp1 %>% 
+#    filter(method %in% c("crispr_score","rnai_score","ces_score")) %>% 
+    ggplot(aes(x= threhold, y= Fraction, color= method)) + 
+    geom_line(lwd=1)+  
+    theme_classic()+  
+    theme(
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size=14,color= "black" ),
+        axis.text.y = element_text(size=14,color= "black"),
+        axis.title.x = element_text(size=16,color= "black"), 
+        axis.title.y = element_text(size=16,color= "black"), 
+        legend.title  = element_text(size=16,color= "black"),
+        legend.text = element_text(size = 16,color= "black"),
+        legend.position = "right")+
+    theme(plot.margin=unit(c(1,1,1,1),"cm"))+
+    labs(col= "Method")+
+    xlab("Threshold")+
+    scale_color_manual(values = pal,name = "Method", 
+                         labels = c("SA","CERES","CES.null","CES.perm","CES", "CRISPR", "DE", "shRNA" ))
+    # scale_color_discrete(name = "Method", 
+    #                      labels = c("SA","CERES","CES.null","CES.perm","CES", "CRISPR", "DE", "shRNA" ))
+    
+  library(pracma)
+  AUC = tmp1 %>% group_by(method) %>% summarise(AUC = trapz(threhold,Fraction)/1000)
+  print(AUC)
+  fig
+}
+  
+fig3c <- plot_for_ess_gene("GAPDH")  
+fig3c 
+
+
+fig3d <- plot_for_ess_gene("ACTB")  
+fig3d
+#in which cell lines does CES cann't identify GAPDH
+```
+
+
+
+
+
+## RMSD for housekeeping genes and nonessential genes of different method
+I didn't get it what is the relative differences in gene dependency ? why is SSMD can't be applied to DEMETER and ATARis?
+
+anyway do the computation part first:
+calculate one scalar for each cell line for each method.
+calculate sample mean and sample SD of hk and non-essential genes using difference score
+data_long1, hk_gene and true_neg will be used
+
+### hk based
+
+```{r,fig.width=5.55}
+tmp1= data_long1 %>%filter(gene %in% hk_gene) %>% group_by(cell)  
+tmp2= data_long1 %>%filter(gene %in% true_neg) %>% group_by(cell)  
+
+get_ssmd_from_data_long1 <- function(x){
+  SSMD_pos= summarise(tmp1, sample_mean_1= mean(!!rlang::sym(x),na.rm = T),  sample_sd_1= sd(!!rlang::sym(x),na.rm =T)  ) 
+  SSMD_neg= summarise(tmp2, sample_mean_2= mean(!!rlang::sym(x),na.rm = T),  sample_sd_2= sd(!!rlang::sym(x),na.rm =T)  ) 
+  SSMD_df = inner_join(SSMD_pos,SSMD_neg)
+  SSMD_df = SSMD_df %>% mutate(ssmd= (sample_mean_1-sample_mean_2)/ (sample_sd_1^2 +sample_sd_2^2)^0.5  )
+  return(SSMD_df$ssmd)
+}
+
+# ##test
+#     SSMD_pos= summarise(tmp1, sample_mean_1= mean(x = predicted,na.rm = T) )
+#     x="ceres"
+#     SSMD_pos= summarise(tmp1, sample_mean_1= mean(!!rlang::sym(x), na.rm = T) )
+#     SSMD_pos= summarise(tmp1, sample_mean_1= mean(!! x, na.rm = T) )
+
+
+ssmd_ces= get_ssmd_from_data_long1(x = "ces")
+ssmd_ave= get_ssmd_from_data_long1(x = "simple_ave")
+ssmd_ceres= get_ssmd_from_data_long1(x = "ceres")
+ssmd_crispr= get_ssmd_from_data_long1(x = "crispr")
+ssmd_rnai= get_ssmd_from_data_long1(x = "rnai_un")
+ssmd_de= get_ssmd_from_data_long1(x = "demeter")
+ssmd_ces_null= get_ssmd_from_data_long1(x = "ces_null")
+ssmd_ces_perm= get_ssmd_from_data_long1(x = "ces_perm")
+
+
+# df_ssmd_ces= data.frame(ssmd_ces, order(ssmd_ces)) %>% tbl_df()
+# check the difference between rank() and order() function
+(mean(ssmd_ces,na.rm = T) -mean(ssmd_ceres,na.rm = T))/mean(ssmd_ceres,na.rm = T)
+ 
+plot_ssmd_df <- 
+  data.frame(ssmd_ces,ssmd_ces_null,ssmd_ces_perm,ssmd_ave,ssmd_rnai,ssmd_crispr,ssmd_de,ssmd_ceres,rank(ssmd_ces)) %>% 
+  tbl_df() %>% 
+  gather(key= method, value = ssmd, ssmd_ces:ssmd_ceres)
+
+plot_ssmd_df$method <- str_split(plot_ssmd_df$method, pattern = "ssmd_"  ,simplify = T)[,2] %>% str_c(.,"_score")
+fig3e <- ggplot(plot_ssmd_df,mapping = aes(y= ssmd, x = rank.ssmd_ces., col= method)) +
+  geom_point()+
+  theme_classic()+
+  theme(
+    axis.line = element_line(colour = "black"),
+    axis.text.x = element_text(size=14,color= "black" ),
+    axis.text.y = element_text(size=14,color= "black"),
+    axis.title.x = element_text(size=15,color= "black"), 
+    axis.title.y = element_text(size=15,color= "black"), 
+    legend.title  = element_text(size=16,color= "black"),
+    legend.text = element_text(size = 14,color= "black"),
+  )+
+  theme(legend.position = "right")+
+  ylab("Pos/neg control 
+  separation (SSMD)")+
+  xlab("Cell lines rank")+
+  labs(col= " Method")+
+  scale_color_manual(values = pal,labels= c("SA","CERES","CES.null","CES.perm","CES", "CRISPR", "DE", "shRNA" ))+
+  theme(plot.margin=unit(c(0.5,0.5,0.5,0.5),"cm"))
+  
+    
+
+fig3e  
+
+plot_ssmd_df$method <- reorder(x = plot_ssmd_df$method, X =  plot_ssmd_df$ssmd, FUN = mean,order = T, na.rm=T)
+
+fig3f <- ggplot(plot_ssmd_df,
+                mapping = aes(y= ssmd, x = method, fill=method)) +
+  geom_bar(stat = "summary",fun.y = "mean",position = "dodge")+
+  coord_flip()+
+  theme_classic()+
+  theme(
+    axis.line = element_line(colour = "black"),
+    axis.text.x = element_text(size=14,color= "black" ),
+    axis.text.y = element_text(size=14,color= "black"),
+    axis.title.x = element_text(size=15,color= "black"), 
+    axis.title.y = element_text(size=15,color= "black"), 
+  )+
+  theme(legend.position = "none") +
+  ylab("Cell line avg. pos/neg 
+     control separation (SSMD)")+
+  xlab("Method")+
+  scale_fill_manual(values = pal)+
+  theme(plot.margin=unit(c(0.5,0.5,0.5,0.5),"cm"))+
+  scale_x_discrete(labels=c("CES", "CERES", "SA","CES_null", "shRNA","CES_perm","CRISPR", "DE") )
+
+
+
+fig3f
+```
+
+```{r,fig.width=10,fig.height=13}
+fig3_1 <- ggarrange(fig3b,fig3a,labels=letters[1:2]) #make housekeeping genes in the front
+#fig3_1 
+
+fig3_2 <- ggarrange(fig3c,fig3d, common.legend = TRUE, legend="top",labels=letters[3:4])
+#fig3_2 
+
+fig3_3 <- ggarrange(fig3e,fig3f, labels=letters[5:6], widths = c(6.31,4.8))
+#fig3_3
+
+
+fig3 <- ggarrange(fig3_1,fig3_2,fig3_3,nrow = 3,heights = c(4.2,4.8,4))
+
+fig3 
+export_fig("fig3",height= 14,  plot =  fig3)
+```
+
+#plot for poster
+```{r,fig.width=8,fig.height=9}
+fig3a1 <- fig3a+ labs(title = "Hart.et al Core \nEssential Genes")+ theme(plot.title = element_text(size= 20))
+
+fig3b1 <- fig3b+ labs(title = "Eisenberg.et al \nHousekeeping Genes")+ theme(plot.title = element_text(size= 20))
+  
+
+fig3c1 <- fig3c+ labs(title = "GAPDH")+ theme(plot.title = element_text(size= 20))
+
+fig3d1 <- fig3d+ labs(title = "ACTB")+ theme(plot.title = element_text(size= 20))
+
+fig3_11 <- ggarrange(fig3a1,fig3b1,labels = c("a","b"))
+fig3_21 <- ggarrange(fig3c1,fig3d1,common.legend = T,legend = "bottom",labels = c("c","d"))
+
+fig <- ggarrange(fig3_11,fig3_21,nrow = 2,heights = c(4,4.5))
+fig
+tiff("fig_pres.tiff", width = 18,height = 21,units = "cm",res = 300)
+fig
+dev.off()
+#ggsave(fig,device = "tiff",width = 7,height = 7,units = "cm",filename = "fig_post")
+```
+
+```{r,fig.width=11.1,fig.height=6}
+fig3_1 <- ggarrange(fig3a,fig3b,labels=letters[1:2])
+#fig3_1 
+
+fig3_2 <- ggarrange(fig3c,fig3d, common.legend = TRUE, legend="right",labels=letters[3:4])
+#fig3_2 
+fig3_12 <- ggarrange(fig3_1,fig3_2,widths = c(4,7.11))
+fig3_3 <- ggarrange(fig3f,fig3e, labels=letters[5:6], widths = c(5.21,5.8))
+#fig3_3
+
+
+# fig3 <- ggarrange(fig3_1,fig3_2,fig3_3,nrow = 3,heights = c(4.2,4.8,4))
+fig3 <- ggarrange(fig3_12,fig3_3,nrow = 2)
+
+fig3 
+# export_fig("fig3",height= 14,   plot =  fig3)
+```
+
+### true ess based (may be also try others?)
+
+```{r}
+tmp1= data_long1 %>%filter(gene %in% true_pos) %>% group_by(cell)  
+tmp2= data_long1 %>%filter(gene %in% true_neg) %>% group_by(cell)  
+
+get_ssmd_from_data_long1 <- function(x){
+  SSMD_pos= summarise(tmp1, sample_mean_1= mean(!!rlang::sym(x),na.rm = T),  sample_sd_1= sd(!!rlang::sym(x),na.rm =T)  ) 
+  SSMD_neg= summarise(tmp2, sample_mean_2= mean(!!rlang::sym(x),na.rm = T),  sample_sd_2= sd(!!rlang::sym(x),na.rm =T)  ) 
+  SSMD_df = inner_join(SSMD_pos,SSMD_neg)
+  SSMD_df = SSMD_df %>% mutate(ssmd= (sample_mean_1-sample_mean_2)/ (sample_sd_1^2 +sample_sd_2^2)^0.5  )
+  return(SSMD_df$ssmd)
+}
+
+# ##test
+#     SSMD_pos= summarise(tmp1, sample_mean_1= mean(x = predicted,na.rm = T) )
+#     x="ceres"
+#     SSMD_pos= summarise(tmp1, sample_mean_1= mean(!!rlang::sym(x), na.rm = T) )
+#     SSMD_pos= summarise(tmp1, sample_mean_1= mean(!! x, na.rm = T) )
+
+
+ssmd_ces= get_ssmd_from_data_long1(x = "ces")
+ssmd_ave= get_ssmd_from_data_long1(x = "simple_ave")
+ssmd_ceres= get_ssmd_from_data_long1(x = "ceres")
+ssmd_crispr= get_ssmd_from_data_long1(x = "crispr")
+ssmd_rnai= get_ssmd_from_data_long1(x = "rnai_un")
+ssmd_de= get_ssmd_from_data_long1(x = "demeter")
+
+
+# df_ssmd_ces= data.frame(ssmd_ces, order(ssmd_ces)) %>% tbl_df()
+# check the difference between rank() and order() function
+
+ 
+plot_ssmd_df <- data.frame(ssmd_ces,ssmd_rnai,ssmd_ave,ssmd_crispr,ssmd_de,ssmd_ceres, rank(ssmd_ces)) %>% tbl_df() %>% gather(key= method, value = ssmd, ssmd_ces:ssmd_ceres)
+plot_ssmd_df$method <- str_split(plot_ssmd_df$method, pattern = "ssmd_"  ,simplify = T)[,2] %>% str_c(.,"_score")
+fig3d <- ggplot(plot_ssmd_df,mapping = aes(y= ssmd, x = rank.ssmd_ces., col= method)) +
+  geom_point()+
+  theme_classic()+
+  theme(axis.title.x=element_text(size = 20,  lineheight=.9, face="plain"))+
+  theme(axis.text.x = element_text(size = 18,angle = 0, hjust = 1))+
+  theme(axis.title.y=element_text(size = 20,  lineheight=.9, face="plain"))+
+  theme(axis.text.y = element_text(size = 18))+
+  theme(legend.title=element_text(,size = 20))+
+  theme(legend.text = element_text(size = 18))+
+  theme(legend.position = "top")+
+  ylab("Pos/neg control separation (SSMD)")+
+  xlab("cell lines rank")+
+  labs(col= "Method")
+fig3d  
+
+plot_ssmd_df$method <- reorder(x = plot_ssmd_df$method, X =  plot_ssmd_df$ssmd, FUN = mean,order = T, na.rm=T)
+
+fig3e <- ggplot(plot_ssmd_df,
+                mapping = aes(y= ssmd, x = method, fill=method)) +
+  geom_bar(stat = "summary",fun.y = "mean",position = "dodge")+
+  theme_classic()+
+  theme(axis.title.x=element_text(size = 20,  lineheight=.9, face="plain"))+
+  theme(axis.text.x = element_text(size = 18,angle = 45, hjust = 1))+
+  theme(axis.text.y = element_text(size = 18))+
+  theme(axis.title.y=element_text(size = 20,  lineheight=.9, face="plain"))+
+  theme(legend.position = "none") +
+  ylab("cell line averaged 
+       pos/neg control separation (SSMD)")+
+  xlab("")
+
+fig3e
+```
+
+
+
+<!-- ### combine the plots together as Figure3 -->
+<!-- ```{r} -->
+<!-- setwd(output_fig_dir) -->
+<!-- tiff("figure3new.tif",width = 35,height = 35,units = "cm",res = 300) -->
+<!-- figure3_1 <- ggarrange(figure4a,figure4b , nrow=2, common.legend = TRUE, legend="bottom",labels=LETTERS[1:2]) -->
+<!-- figure3_2 <- ggarrange( fig5a,fig5b, nrow = 2, labels = LETTERS[3:4],heights = c(3.5,3)) -->
+<!-- figure3_new <- ggarrange(figure3_1,figure3_2, ncol= 2) -->
+<!-- figure3_new  -->
+<!-- dev.off() -->
+<!-- ``` -->
+
+
+
+
+
+# CES corrects screen-specific biases
+
+
+fig4 density plot,  (decide which plot to use in figure4 )
+
+```{r}
+tmp <-
+  data_long1 %>%
+  select(gene:rnai_un,ceres:ces_null) %>%
+  group_by(gene) %>%
+  mutate(cell_line_ave_rnai_un= mean(rnai_un,na.rm = T)) %>%
+  mutate(cell_line_ave_crispr= mean(crispr,na.rm = T)) %>%
+  mutate(cell_line_ave_ces= mean(ces,na.rm = T)) %>%
+  mutate(cell_line_ave_ceres= mean(ceres,na.rm = T)) %>%
+  mutate(cell_line_ave_simple_ave= mean(simple_ave,na.rm = T)) %>%
+  mutate(cell_line_ave_demeter= mean(demeter,na.rm = T)) %>%
+  mutate(cell_line_ave_ces_null= mean(ces_null,na.rm = T)) %>%
+  mutate(cell_line_ave_ces_perm= mean(ces_perm,na.rm = T)) %>%
+  mutate(house_keeping_gene = gene %in% hk_gene ) %>%
+  mutate(true_essential_gene = gene %in% true_pos) %>%
+  mutate(non_essential_gene = gene %in% true_neg) %>%
+  mutate(essential=  case_when(true_essential_gene & (!non_essential_gene) ~ "True essential",
+  non_essential_gene & (!true_essential_gene) ~ "Non-essential" ))
+
+pal <- c("True essential" = "red", "Non-essential" = "blue")
+
+
+plot_den <- function(cell_name, method){
+tmp1 <-  tmp %>% filter(cell ==  cell_name) 
+    w <- str_c("cell_line_ave",method, sep = "_")
+    tmp1 %>% 
+    ggplot(aes_string(x = w, y = method) ) +
+    geom_point(size = 0.5, color = 'grey') +
+    geom_density_2d(data = tmp1 %>% filter(!(is.na(essential)) ),
+    aes(color = essential)
+    ) +
+    geom_abline(slope = 1)+
+    theme_classic()+
+    theme(axis.title.x=element_text(size = 10,  face="plain"))+
+    theme(axis.title.y=element_text(size = 10,  face="plain"))+
+    theme(axis.text.x = element_text(size = 10, color= "black"))+
+    theme(axis.text.y = element_text(size = 10,color= "black"))+
+    theme(legend.title =  element_text(size = 10, color= "black"))+
+    theme(legend.title =  element_blank())+
+    theme(legend.text = element_text(size = 10,color= "black"))+
+    xlab("Cell line avg. essentiality score")+
+    ylab("Cell line essentiality score")+
+    guides(color=guide_legend(title="Gene type"))+
+    scale_color_manual(values = pal,labels= c("Common non-essential genes", "Common essential genes"))+
+    theme(plot.title = element_text(hjust = 0.5,colour = "black",size = "18"))+
+    theme(plot.margin=unit(c(0.5,0.5,0.5,0.5),"cm"))+
+    guides(fill=guide_legend( nrow = 2, byrow = F))  
+
+}
+
+# 
+fig4.1 <- plot_den("HT29","crispr") +ggtitle("CRISPR")
+fig4.2 <- plot_den("HT29","rnai_un")+ ggtitle("shRNA")
+fig4.3 <- plot_den("HT29","ces")+ ggtitle("CES")
+fig4.4 <- plot_den("HT29","demeter")+ggtitle("DEMETER")
+fig4.5 <- plot_den("HT29","ceres")+ggtitle("CERES")
+fig4.6 <- plot_den("HT29","simple_ave")+ggtitle("SA")
+fig4.7 <- plot_den("HT29","ces_null")+ggtitle("CES.null")
+fig4.8 <- plot_den("HT29","ces_perm")+ggtitle("CES.perm")
+```
+
+
+
+```{r,fig.width=11.1,fig.height=6}
+fig4 <- ggarrange(fig4.3,fig4.7,fig4.8,fig4.6, fig4.5,fig4.1,fig4.4,fig4.2, ncol = 4, nrow = 2,
+                  common.legend = T,
+                  legend = "bottom")
+fig4
+export_fig("fig4", height = 6,plot = fig4)
+
+
+```
+
+```{r,fig.width=11.1,fig.height=7.5}
+figs2.1 <- plot_den("PC3","crispr") +ggtitle("CRISPR")
+figs2.2 <- plot_den("PC3","rnai_un")+ ggtitle("RNAi")
+figs2.3 <- plot_den("PC3","ces")+ ggtitle("CES")
+figs2.4  <- plot_den("PC3","demeter")+ggtitle("DEMETER")
+figs2.5  <- plot_den("PC3","ceres")+ggtitle("CERES")
+figs2.6  <- plot_den("PC3","simple_ave")+ggtitle("SA")
+figs2 <- ggarrange(figs2.1,figs2.2,figs2.3,figs2.4,figs2.5,figs2.6,ncol = 3,nrow=2,byrow=T,common.legend = T,legend = "bottom")
+figs2
+```
+
+
+# ```{r}
+# #two plot for crispr and rnai
+# #two facet for HPAFII and HT29
+# #x axis cell line average dependence score
+# #y axis cell line dependency score
+# #
+# tmp <-  
+#   data_long1 %>% 
+#   select(gene:rnai_un,ceres:simple_ave) %>% 
+#   group_by(gene) %>%
+#   mutate(cell_line_ave_rnai_un= mean(rnai_un,na.rm = T)) %>% 
+#   mutate(cell_line_ave_crispr= mean(crispr,na.rm = T)) %>% 
+#   mutate(cell_line_ave_ces= mean(ces,na.rm = T)) %>% 
+#   mutate(cell_line_ave_ceres= mean(ceres,na.rm = T)) %>% 
+#   mutate(cell_line_ave_simple_ave= mean(simple_ave,na.rm = T)) %>% 
+#   mutate(cell_line_ave_demeter= mean(demeter,na.rm = T)) %>% 
+#   mutate(house_keeping_gene = gene %in% hk_gene ) %>% 
+#   mutate(true_essential_gene = gene %in% true_pos) %>% 
+#   mutate(non_essential_gene = gene %in% true_neg) %>% 
+#   mutate(essential=  case_when(true_essential_gene & (!non_essential_gene) ~ T,
+#                                non_essential_gene & (!true_essential_gene) ~ F ))
+# 
+# #divide and concour, the reason is two values needed in the gathered set which cannt be done by one gather verb
+# tmp1 <- data_long1 %>% 
+#   select(gene:rnai_un,ceres:simple_ave) %>% 
+#   gather(key="methods", value="Ess", crispr,rnai_un,ces,ceres,demeter,simple_ave)
+# 
+# 
+# tmp2 <- tmp %>% 
+#   select(-c(crispr:demeter,ces:simple_ave)) %>% 
+#   gather(key = "methods", value = "avess", cell_line_ave_rnai_un:cell_line_ave_demeter) %>% 
+#   select(-methods)
+# 
+# tmp3 <- left_join(tmp2,tmp1)
+# 
+# plot_den <- function(cell_name){
+#   tmp3 <- tmp3 %>%
+#    filter(cell ==  cell_name) %>% 
+#    filter(!is.na(Ess)) 
+#   
+#   tmp3 %>% 
+#    ggplot(aes(x = avess, y = Ess) )+
+#     facet_wrap(~ methods)+
+#     geom_point(size = 0.5, color = 'grey') +
+#    geom_density_2d(data = tmp3 %>% filter(!(is.na(essential)) ),
+#             aes(color = essential)) +
+#     geom_abline(slope = 1)
+#      }
+# 
+# 
+# 
+# ```
+# ```{r,fig.width=15,fig.height=10}
+# fig4.1 <- plot_den("HT29","crispr")
+# fig4.2 <- plot_den("HT29","rnai_un")
+# fig4.3 <- plot_den("HT29","ces")
+# fig4.4 <- plot_den("HT29","demeter")
+# fig4.5 <- plot_den("HT29","ceres")
+# fig4.6 <- plot_den("HT29","simple_ave")
+# ggarrange(fig4.1,fig4.2,fig4.3,fig4.4,fig4.5,fig4.6,ncol = 3,nrow=2,byrow=T,common.legend = T,legend = "bottom")
+# 
+# ```
+# 
+# ```{r,fig.width=30,fig.height=45}
+# plot_den("HT29")
+# ```
+
+
+
+
+
+## enrichment for crispr and rnai spec hk genes
+# ```{r}
+# #filter genes to house keeping genes and rank by their correlation between crispr and rnai(across multiple cell lines)
+# # two columns : genes, and correlation coefficients,
+# # and then submitted to enrichment analysis?
+# #   
+# 
+# gene_over3obs<- tbl_df(data_long1) %>%
+#   filter(gene %in% hk_gene ) %>%
+#   select(gene,cell, crispr, rnai_un) %>%
+#   drop_na() %>%
+#   gather(key = "screen_met", value = "ess",crispr:rnai_un) %>%
+#   mutate(screen_met= as.factor(screen_met)) %>%
+#   group_by(gene,screen_met) %>%
+#   summarize(n=n()) %>%
+#   arrange(n) %>% 
+#   filter(n>3) %>% 
+#   pull(gene) %>% unique()
+# 
+# tmp<- tbl_df(data_long1) %>%
+#   filter(gene %in% hk_gene ) %>%
+#   filter(gene %in% gene_over3obs) %>% 
+#   select(gene,cell, crispr, rnai_un) %>%
+#   gather(key = "screen_met", value = "ess",crispr:rnai_un) %>%
+#   mutate(screen_met= as.factor(screen_met)) %>%
+#   group_by(gene) %>% 
+#   dplyr::do(broom::tidy(t.test(ess ~ screen_met,data = .))) %>% 
+#   ungroup() %>% 
+#   select(gene, estimate1, estimate2, p.value)
+# 
+# colnames(tmp) <-  c("gene", "crispr", "rnai_un", "t_pvalue") 
+# 
+# # tmp %>% filter(p.value<0.05) %>% filter(estimate>0) %>% dim() #895 
+# # #
+# 
+# #I still don't know why this doesn't work
+# # tmp<- data_long1 %>%
+# #   filter(gene %in% hk_gene ) %>%
+# #   select(gene,cell, crispr, rnai_un) %>%
+# #   gather(key = "method", value = "ess",crispr:rnai_un) %>%
+# #   drop_na() %>%
+# #   mutate(method= as.factor(method)) %>%
+# #   group_by(gene) %>%
+# #   nest() %>% 
+# #   tidyr::spread(key = method, value = ess) 
+# #error method not found
+#   
+#  tmp1<- tbl_df(data_long1) %>%
+#   filter(gene %in% hk_gene ) %>%
+#   filter(gene %in% gene_over3obs) %>% 
+#   select(gene,cell, crispr, rnai_un) %>%
+#    group_by(gene) %>% 
+#   do(tidy(cor.test(.$crispr, .$rnai_un))) %>% 
+#    select(gene, estimate, p.value)
+#  colnames(tmp1) <- c("gene", "cor", "cor_pvalue")
+#  
+# tmp2 <- left_join(tmp,tmp1)
+# setwd(input_data_dir)
+# write.csv(x = tmp2, file = "hkgene_result.csv",row.names = F) 
+#  
+# # tmp <- data_long1 %>%  
+# #   filter(gene %in% hk_gene ) %>% 
+# #   select(-contains("rank")) %>% 
+# #   group_by(gene) %>% 
+# #   summarise(crispr_rnai_p_cor= cor(rnai_un, crispr, method = "pearson",use="na.or.complete") ,
+# #             crispr_rnai_p_cor_pvalue=cor.test(rnai_un, crispr, method = "pearson",use="na.or.complete")) %>% 
+# #   filter(!(is.na(crispr_rnai_p_cor))) %>% 
+# #   arrange(crispr_rnai_p_cor)
+# 
+# 
+# 
+# 
+# 
+# 
+# headTail(tmp)
+# hist(tmp$crispr_rnai_p_cor)
+# sum(tmp$crispr_rnai_p_cor <  0.3)
+# sum(tmp$crispr_rnai_p_cor <  0.3)
+# gene_incon <- tmp$gene[tmp$crispr_rnai_p_cor <  0.3]
+# 
+# tmp1 <- data_long1 %>% 
+#   filter(gene %in% gene_incon) %>% 
+#   group_by(gene) %>% 
+#   summarise(crispr_mean = mean(crispr,na.rm = T), 
+#             rnai_mean = mean(rnai_un,na.rm = T)
+#   ) %>% 
+#   mutate(gene_type= case_when( crispr_mean > rnai_mean~ "crispr_specific", 
+#                                crispr_mean < rnai_mean ~ "rnai_specific")
+#          ) %>% 
+#   filter(!(is.na(gene_type)))
+# 
+# 
+# 
+# rnai_spec <- tmp1 %>% filter(gene_type == "rnai_specific") %>%  pull(gene)
+# crispr_spec <- tmp1 %>% filter(gene_type == "crispr_specific") %>%  pull(gene)
+# 
+# setwd(input_data_dir)
+# # write.csv(rnai_spec,"rnai_spec.csv",row.names = F)
+# # write.csv(crispr_spec, "crispr_spec.csv",row.names = F)
+# 
+# crispr_spec_df <- fread("KEGG_2019_Human_table_crispr.txt")
+# rnai_spec_df <- fread("KEGG_2019_Human_table_rnai.txt")
+# 
+# plot_pathways <- function(df){
+#   df %>% 
+#     mutate(logFDR= round(-log10(`Adjusted P-value`),2)) %>%
+#     arrange(desc(logFDR)) %>%
+#     slice(1:10) %>% 
+#     select(Term,logFDR) %>% 
+#     ggplot(aes(x= reorder(Term,logFDR), y= logFDR))  +
+#       geom_bar(stat = "identity")+
+#       coord_flip()
+# }
+# 
+# 
+# plot_pathways(crispr_spec_df)
+# plot_pathways(rnai_spec_df)
+# 
+# plot_pathways <- function(df){
+#   df %>% 
+#     arrange(desc(`Combined Score`)) %>% 
+#     slice(1:10) %>% 
+#     select(Term,`Combined Score`) %>% 
+#     ggplot(aes(x= reorder(Term,`Combined Score`), y=`Combined Score`))  +
+#       geom_bar(stat = "identity")+
+#       coord_flip()
+# }
+# 
+# 
+# plot_pathways(crispr_spec_df)
+# plot_pathways(rnai_spec_df)
+# 
+# ```
+
+
+
+
+# CES identifies molecular biomarkers for gene essentiality
+
+```{r}
+tmp <- data_long1 %>%  
+  group_by(gene) %>% 
+  summarise(
+    crispr_rnai_p_cor= cor(rnai_un, crispr, method = "pearson",use="na.or.complete")
+    ) %>% 
+  filter(!(is.na(crispr_rnai_p_cor))) %>% 
+  arrange(crispr_rnai_p_cor)
+
+headtail(tmp)
+
+checkfun <- function(gene_name){
+  data_long1 %>%  filter(gene == gene_name) %>%   filter(!(is.na(crispr))) %>% filter(!(is.na(rnai_un)))
+}
+
+w <- headTail(tmp)$gene 
+mapply(checkfun,w,SIMPLIFY = F)
+
+# gene_incon <- tmp%>%
+#   filter(crispr_rnai_p_cor < -0.2) %>% 
+#   pull(gene)
+
+#gene_incon from hk_gene that are very inconsistent betwen crispr and rnai
+tmp2 <-   data_long1 %>% 
+  tbl_df() %>% 
+  filter(gene %in% gene_incon) %>%
+  group_by(gene) %>% 
+  summarise(ces_rank_mean = mean(ces_rank, na.rm = T)) %>% 
+  arrange(ces_rank_mean) 
+
+w <- tmp2$gene[1:20]
+mapply(checkfun,w,SIMPLIFY = F)
+# pick one gene
+  
+```
+
+## Predicting ces using molecular feature directly, gene wise model
+```{r}
+
+# tmp <- filter(data_long1, cell!= "DLD1") 
+tmp <- filter(data_long1, !(is.na(ces))) %>% 
+  group_by(cell) %>% 
+  mutate(ces = scale(ces)) %>% 
+  ungroup
+
+
+
+summary(tmp)
+
+ models <-  tmp %>%
+   group_by(gene) %>%
+   do(mod= lm( ces~ array+mut+seq+cn, data = .))
+
+coef_df <- models %>%
+  do(data.frame(
+    gene = .$gene,
+    var = names(coef(.$mod)),
+    coef(summary(.$mod))
+  )
+)
+
+summary(coef_df)
+colnames(coef_df)[2:6] <- c("coef_type", "Estimate", "STD", "statistics","P")
+
+coef_df %>% filter(P< 0.05) %>% dim
+check <- coef_df %>% filter(P< 0.05) %>% filter(coef_type== "cn") %>% 
+  filter(Estimate>0) %>% ungroup %>% summarize(No =n())
+
+tmp1 <- coef_df %>% 
+  filter(P< 0.05) %>% 
+  group_by(coef_type) %>% 
+  filter(coef_type != "(Intercept)") %>% 
+  summarise(N_sig = n()) %>% 
+  mutate(prop= N_sig / sum(N_sig))
+tmp1
+
+
+count.data <- 
+  tmp1 %>%
+  mutate(lab.ypos = cumsum(prop) - 0.5*prop) %>% 
+  mutate(prop= round(prop,2))
+
+count.data
+
+
+ggplot(count.data, aes(x = 2, y = prop, fill = coef_type)) +
+  geom_bar(stat = "identity", color = "white") +
+  coord_polar(theta = "y", start = 0)+
+  theme_void()+
+  theme(legend.title=element_text(,size = 20))+
+  theme(legend.text = element_text(size = 18))+
+  theme(legend.position = "right")+
+  guides(fill=guide_legend(title="Molecular sig. type"))
+
+
+#  geom_text(aes(y = lab.ypos, label = prop), color = "white")
+
+
+```
+#check
+```{r}
+tmp1 <- coef_df %>% 
+  filter(P< 0.05) %>% 
+  group_by(coef_type) %>% 
+  filter(coef_type != "(Intercept)") %>% 
+  filter(gene == "IDH1")
+tmp1
+```
+
+#some explorative analysis on the molecular feature and CES
+```{r}
+#File for Jing
+wide <- coef_df %>% 
+  filter(coef_type != "(Intercept)") %>% 
+  group_by(gene) %>% 
+  mutate(coef_type1 = str_c(coef_type,"_estimate",sep = "")) %>% 
+  mutate(coef_type2 = str_c(coef_type,"_P",sep = "")) %>% 
+  select(c(-2,-5:-4)) %>% 
+  spread(coef_type1, Estimate) %>% 
+  spread(coef_type2, P) %>% 
+  summarise_all(funs(.[which(!is.na(.))]))
+  
+#write.csv(wide,"wide.csv",row.names = F)  
+
+
+#compare the genes with high cnv, see what is the expression level and ces socre?
+#genes with high cnv and high ces should also have high expression in their cell context, comparing to genes having high cnv and low ces
+
+check <- data_long1 %>%  filter(!(is.na(ces_rank))) %>% 
+  filter(ces_rank < 1000) 
+  
+summary(check$cn)
+summary(data_long1$cn)
+#what about the curated core essential genes? what is their CNV
+check <- 
+  data_long1 %>%  
+  filter(!(is.na(ces_rank))) %>% 
+  filter(gene %in% true_pos)
+
+summary(check$cn)
+summary
+
+#of all the genes with significant coefficient,do a contingency table test, do ces agree with gold standards?
+genes_cnv <- coef_df %>% 
+  filter(coef_type == "cn") %>% 
+  filter(P<0.05) %>% 
+  pull(gene)
+
+check <- data_long1 %>% 
+  filter(gene %in% genes_cnv) %>% 
+  filter(!(is.na(ces_rank))) %>% 
+  select(gene, ces_rank) %>% 
+  filter(gene %in% c(true_pos,true_neg)) %>% 
+  mutate(true_ess= case_when(gene %in% true_pos ~ 1, 
+                             gene %in% true_neg ~ 0)
+         )
+check %>% ggplot(data = check,mapping =  aes(x=as.factor(true_ess), y=ces_rank) )+
+  geom_boxplot(outlier.color = "white")
+wilcox.test(check$ces_rank~ check$true_ess)
+
+# data_long1 %>% 
+#     filter(!(is.na(ces_rank))) %>% 
+#   ggplot(aes(cn,ces_rank))+
+#   geom_point()
+# data_long1 %>% 
+#     filter(!(is.na(ceres_rank))) %>% 
+#   ggplot(aes(cn,ceres_rank))+
+#   geom_point()
+# 
+# data_long1 %>% 
+#     filter(!(is.na(crispr_rank))) %>% 
+#   ggplot(aes(cn,crispr_rank))+
+#   geom_point()
+# 
+# data_long1 %>% 
+#     filter(!(is.na(rnai_rank))) %>% 
+#   ggplot(aes(cn,rnai_rank))+
+#   geom_point()
+# 
+# 
+# data_long %>% 
+#     filter(!(is.na(crispr))) %>% 
+#   ggplot(aes(crispr,cn))+
+#   geom_point()
+
+
+
+
+```
+
+```{r}
+check <- data_long1 %>% 
+  filter(gene %in% genes_cnv) %>% 
+  filter(!(is.na(ces_rank))) %>% 
+  select(gene, ces_rank, cn) %>% 
+  filter(gene %in% c(true_pos,true_neg)) %>% 
+  mutate(true_ess= case_when(gene %in% true_pos ~ 1, 
+                             gene %in% true_neg ~ 0)) %>% 
+  mutate(true_ess=as.factor(true_ess))
+  # group_by(gene) %>% 
+  # summarise(ces_rank_mean)
+
+
+check %>% filter(true_ess==0) %>% summarise(mean(ces_rank))
+
+check %>% 
+  ggplot(data = check,mapping =  aes(y=cn, x=ces_rank,color=true_ess))+
+  geom_point(size=0.0005)+ 
+  geom_violin(data = check %>% filter(true_ess==1) , 
+               mapping = aes(y= cn, x=1743.5),
+               fill="blue",
+               color="black",
+               outlier.shape =  NA,
+               width= 2000)+
+  geom_violin(data = check %>% filter(true_ess==0) , 
+               mapping = aes(y= cn, x=8761.6),
+               fill="red",
+               color="black",
+               outlier.shape =  NA,
+               width= 2000)+
+#  ylim(c(-5,5))+
+  coord_flip()
+
+#averaged
+check <- data_long1 %>% 
+  mutate(cn= data_long_null$cn) %>% 
+  filter(gene %in% genes_cnv) %>% 
+  filter(!(is.na(ces_rank))) %>% 
+  select(gene, ces_rank, cn) %>% 
+  filter(gene %in% c(true_pos,true_neg)) %>% 
+  mutate(true_ess= case_when(gene %in% true_pos ~ 1, 
+                             gene %in% true_neg ~ 0)) %>% 
+  mutate(true_ess=as.factor(true_ess))
+check1 <- check %>% 
+  group_by(gene) %>% 
+  summarise(rank_ave= mean(ces_rank),cn_ave= mean(cn)) %>% 
+    mutate(true_ess= case_when(gene %in% true_pos ~ 1, 
+                             gene %in% true_neg ~ 0)) %>% 
+  mutate(true_ess=as.factor(true_ess)) 
+  
+ggplot(data = check1,mapping =  aes(y=cn_ave, x=rank_ave,color=true_ess))+
+  geom_point(size=0.0005)+
+  geom_violin(data = check1 %>% filter(true_ess==1) , 
+               mapping = aes(y= cn_ave, x=1743.5),
+               fill="blue",
+               color="black",
+               outlier.shape =  NA,
+               width= 2000)+
+  geom_violin(data = check1 %>% filter(true_ess==0) , 
+               mapping = aes(y= cn_ave, x=8761.6),
+               fill="red",
+               color="black",
+               outlier.shape =  NA,
+               width= 2000)+
+#  ylim(c(-5,5))+
+  coord_flip()
+
+ 
+
+
+```
+
+
+```{r}
+# now for gene expression
+check <- data_long1 %>% 
+  filter(gene %in% genes_cnv) %>% 
+  filter(!(is.na(ces_rank))) %>% 
+  select(gene, ces_rank, array) %>% 
+  filter(gene %in% c(true_pos,true_neg)) %>% 
+  mutate(true_ess= case_when(gene %in% true_pos ~ 1, 
+                             gene %in% true_neg ~ 0)) %>% 
+  mutate(true_ess=as.factor(true_ess))
+  # group_by(gene) %>% 
+  # summarise(ces_rank_mean)
+
+check %>% filter(true_ess==1) %>% summarise(mean(ces_rank))
+
+check %>% 
+  ggplot(data = check,mapping =  aes(y=array, x=ces_rank,color=true_ess))+
+  geom_point(size=0.0005)+ 
+  geom_violin(data = check %>% filter(true_ess==1) , 
+               mapping = aes(y= array, x=1743.5),
+               fill="blue",
+               color="black",
+               outlier.shape =  NA,
+               width= 2000)+
+  geom_violin(data = check %>% filter(true_ess==0) , 
+               mapping = aes(y= array, x=8761.6),
+               fill="red",
+               color="black",
+               outlier.shape =  NA,
+               width= 2000)+
+  coord_flip()
+```
+
+
+
+# CES helps identifying cell specific gene essentiality. 
+## get the genes 
+```{r}
+# personazlied essential genes are those with lowest ces ranking
+# for a given cell line, but in general large ces mean rank across cells.
+# ces_rank < 100 & ces_mean > 5000
+
+tmp <- 
+  data_long1 %>% 
+  group_by(gene) %>% 
+  mutate(ces_meanrank = mean(ces_rank,na.rm = T)) %>% 
+  mutate(ces_cs = case_when(ces_rank < 100 & ces_meanrank > 5000 ~ 1, TRUE ~ 0)) %>% 
+  filter(ces_cs == 1) %>% 
+  ungroup()
+tmp %>%group_by(gene)%>%  summarise(n())  #243 unique genes
+tmp %>%group_by(cell)%>%  summarise(n())  #for 41 cell lines
+
+#in addition we showed many such genes are not identified as essential in this specific cell line when using crispr or RNA alone, even with a much wider threhold.
+  
+tmp1 <-   tmp %>% 
+  filter(!(gene %in% hk_gene)) %>% 
+  filter(crispr_rank >2000 & rnai_rank >2000 ) %>% 
+  filter(ceres_rank >2000 & de_rank >2000 ) 
+
+#90 rows of gene*cell comb
+tmp1 %>%group_by(gene)%>%  summarise(N=n()) %>% arrange(desc(N))  #73 unique genes
+tmp1 %>%group_by(cell)%>%  summarise(N=n())  #for 29 cell lines 
+novel_genelist <- unique(tmp1$gene)  
+```
+
+## output the cell-specific essential genes and their cells found only by ces to a table which is then used for cytoscape plotting
+```{r}
+setwd(output_fig_dir)
+tmp2 <- tmp1 %>% 
+  select(gene,cell) 
+tmp2 <- as.data.frame(tmp2)
+library(xlsx)
+write.xlsx(x = tmp2, file= "newgenes.xlsx", sheetName="edges", col.names=TRUE, row.names=F, append=FALSE)
+
+tmp3 <- tbl_df(tmp1) %>% 
+  select(gene,cell,tissue_origin) %>% 
+  gather(key="node_type",value= "node_text", gene:cell) %>% 
+  distinct(node_text, .keep_all = TRUE) %>% 
+  mutate(node_attr = tissue_origin) %>% 
+  mutate(node_attr=as.factor(case_when(node_type== "gene"~ "None",
+                                       TRUE ~ tissue_origin))
+         )
+tmp3 <- as.data.frame(tmp3)    
+
+# xlsx::write.xlsx(tmp3, file="newgenes.xlsx", sheetName="nodes",
+#   col.names=TRUE, row.names=F, append=T)
+
+
+# load into cytoscape 3.6, 
+# Import network file from table, define 'gene' as source, 'cell' as target and 'Disease' as target node attribute
+```
+
+
+## support the role of cell-specific essential gene find only by ces with evidence in expression. 
+
+### an example of SRGN which is found essential in 7 leukemia cell lines 
+```{r}
+SRGN_ESS_cell <-  tmp %>% 
+  filter(gene=="SRGN") %>% 
+  pull(cell)
+
+tmp2 <- data_long1 %>% 
+  filter(gene == "SRGN") %>% 
+  filter(cell!="DLD1") %>% 
+  mutate(ess_cell= cell %in% SRGN_ESS_cell) 
+
+#plot a ordered barplot ASPC1 expression across the cell lines
+s3.1 <- ggplot(data= tmp2, mapping = aes(reorder(cell,array), y = array,fill= ess_cell)) + 
+geom_bar(stat = "identity")+
+  theme_classic()+
+  theme(axis.text.x = element_text(size = 12,angle = 0, hjust = 1,color = "black"))+
+  theme(axis.text.y = element_text(size = 10,colour = "black"))+
+  theme(axis.title.y=element_text(size = 16,  lineheight=.9, face="plain"))+
+  theme(axis.title.x=element_text(size = 16,  lineheight=.9, face="plain"))+
+  theme(legend.title=element_text(,size = 14))+
+  theme(legend.text = element_text(size = 12))+
+  ylab("SRGN expression by array")+
+  xlab("cell lines")+
+  labs(fill = "SRGN dependent cell line")+
+  coord_flip()
+plot_array
+##
+s3.2 <- ggplot(data= tmp2, mapping = aes(x=reorder(cell, seq), y = seq,fill= ess_cell)) +
+  geom_bar(stat = "identity")+
+   theme_classic()+
+  theme(axis.text.x = element_text(size = 12,angle = 0, hjust = 1,color = "black"))+
+  theme(axis.text.y = element_text(size = 10,colour = "black"))+
+  theme(axis.title.y=element_text(size = 16,  lineheight=.9, face="plain"))+
+  theme(axis.title.x=element_text(size = 16,  lineheight=.9, face="plain"))+
+  theme(legend.title=element_text(,size = 14))+
+  theme(legend.text = element_text(size = 12))+
+  ylab("SRGN expression by RNA-seq")+
+  xlab("cell lines")+
+  labs(fill = "SRGN dependent cell line")+
+  coord_flip()
+
+figs3 <- ggarrange(s3.1,s3.2,ncol = 2,nrow = 1,common.legend = T)
+export_fig(fig_name ="figs3", height = 11,plot = figs3)
+  # setwd(output_fig_dir)
+  # ggsave("figure_s3.tiff",plot = check_plot_array, device = "tiff", width=12, height=12, unit="cm", dpi=300,path = getwd())
+```
+
+
+## additional analysis for the expression of cell specific essential genes
+table novel_genes and data_long1 is used 
+## how is the gene expression in their essential cell lines ranked comparing to other cell lines
+
+
+```{r}
+
+# for (i in 1:length(novel_genelist)){
+#   check_data <- data_long1 %>% filter(gene == novel_genelist[i]) 
+#   check_cell <- filter(tmp1, gene== novel_genelist[i]) %>% pull(cell)
+#   seq_check <- arrange(check_data,desc(seq)) %>% pull(cell)
+#   array_check <- arrange(check_data,desc(array)) %>% pull(cell)
+#   print(novel_genelist[i])
+#   print(check_cell)
+#   print(match(check_cell, seq_check) )
+#   print(match(check_cell, array_check) )
+# }
+
+```
+
+
+
+```{r}
+x=y=NULL
+for (i in 1:length(novel_genelist)){
+  check_data <- data_long1 %>% filter(gene == novel_genelist[i]) 
+  check_cell <- filter(tmp1, gene== novel_genelist[i]) %>% pull(cell)
+  seq_check <- arrange(check_data,desc(seq)) %>% pull(cell)
+  xi= match(check_cell, seq_check)
+  x = c(x,xi)
+  yi=setdiff(1:length(seq_check),x)
+  y = c(y,yi)
+}
+
+
+  #independent 2-group Mann-Whitney U Test
+mean(x)
+mean(y)
+#is the expression of these genes in their specific cell line different from the other cell lines??
+
+wilcox.test(x,y,paired = F)
+# rating= c(x, y)
+# fill = c(rep("essential", length(x)), rep("others", length(y)))
+# dat= data.frame(rating, fill)
+# ggplot(dat, aes(x=rating, fill=fill)) + geom_density(alpha=.3)
+```
+
+```{r}
+x=y=NULL
+for (i in 1:length(novel_genelist)){
+  check_data <- data_long1 %>% filter(gene == novel_genelist[i]) 
+  check_cell <- filter(tmp1, gene== novel_genelist[i]) %>% pull(cell)
+  array_check <- arrange(check_data,desc(array)) %>% pull(cell)
+
+  xi= match(check_cell, array_check)
+  x = c(x,xi)
+  yi=setdiff(1:length(array_check),x)
+  y = c(y,yi)
+
+}
+
+mean(x)
+mean(y)
+wilcox.test(x,y,paired = F )
+
+# rating= c(x, y)
+# fill = c(rep("essential", length(x)), rep("others", length(y)))
+# dat= data.frame(rating, fill)
+# ggplot(dat, aes(x=rating, fill=fill)) + geom_density(alpha=.3)
+
+```
+
+
+
+
+#what is the coorelation between crispr and ceres?
+```{r}
+cor.test(data_long1$ceres,data_long1$cn,use = "complete.obs")
+
+data_long1 %>% 
+  filter(!(is.na(cn) )) %>% 
+  filter(!(is.na(ceres) )) %>% 
+  group_by(cell) %>%
+  summarise(
+    ceres_cnv_p_coef= cor(ceres, cn, method = "pearson",use="complete.obs")
+    ) %>% 
+  ggplot(aes(x=cell,y=ceres_cnv_p_coef)) +
+  geom_bar(stat = "identity")+
+  coord_flip()
+
+
+ 
+```
+
+
+
+
+```{r}
+x= c("Gene A", "Gene B","Gene C","Gene D")
+y=c(1,0.3,2.5,-2 ) 
+df <- data.frame(x,y)
+tbl_df(df) %>% ggplot() + 
+  geom_point(aes(x=x, y=y,color=x),size = 5) + 
+  geom_segment(aes(x=x, xend=x, y=0, yend=y,color=x ),lwd=1.5)+
+  scale_y_continuous(expand = c(0, 0),limits = c(-3, 3))+
+  theme(axis.ticks = element_blank(), axis.text.y = element_blank() ,
+        axis.line = element_line(colour = "black", 
+                      size = 1.2, linetype = "solid"))
+  
+
+
+# x= c("Gene A", "Gene B","Gene C","Gene D")
+# y= c(-0.8, 1.5,1,0.2)
+
+```
+
