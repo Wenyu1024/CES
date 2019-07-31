@@ -8,7 +8,7 @@ We developed a computational approach called combined gene essentiality score (C
 R markdown for replicating the analysis in the manuscript is provided.
 
 # Data
-Preapred gene-level data, gene name annotation as well as reference gene sets used for the code are avaliable at https://drive.google.com/open?id=1QyrAxUzNEvbvYwHg4_xXh-dCgWB7a0A2
+Preapred gene-level data, gene name annotation as well as reference gene sets used for the code are avaliable at https://drive.google.com/file/d/18XZCBx9wVHdxf5F3Bq937Qq-MKayufX_/view?usp=sharing
 
 
 
