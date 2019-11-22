@@ -1223,7 +1223,7 @@ tmp <-
   mutate(cell_line_ave_ceres= mean(ceres,na.rm = T)) %>%
   mutate(cell_line_ave_simple_ave= mean(simple_ave,na.rm = T)) %>%
   mutate(cell_line_ave_demeter= mean(demeter,na.rm = T)) %>%
-  mutate(cell_line_ave_demeter2= mean(demeter,na.rm = T)) %>%
+  mutate(cell_line_ave_demeter2= mean(demeter2,na.rm = T)) %>%
   mutate(cell_line_ave_ces_null= mean(ces_null,na.rm = T)) %>%
   mutate(cell_line_ave_ces_perm= mean(ces_perm,na.rm = T)) %>% 
   mutate(house_keeping_gene = gene %in% hk_gene ) %>%
